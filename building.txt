@@ -1,3 +1,0 @@
-To build for the 84+CSE, uncomment "DEFINE TI84PCSE" in settings.inc, re-assemble with ZDS, sign with Wappsign (or equivalent) using 010F.key, and run "convert_to_color.bat".
-
-To build for the 84+/84+SE, comment out "DEFINE TI84PCSE" in settings.inc, re-assemble with ZDS, and sign with Wappsign (or equivalent) using 0104.key.
