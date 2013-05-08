@@ -52,6 +52,7 @@ EnableUSB:
 ;Enables USB communication.
 ;Inputs:      None
 ;Outputs:     None
+       di
        ;Hold the USB controller in reset
        xor a
        out (4Ch),a
@@ -71,6 +72,7 @@ EnableUSB:
        call WaitForControllerReset
        ld a,8
        out (4Ch),a
+       ei
        xor a
        ret
 

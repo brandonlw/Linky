@@ -6,6 +6,7 @@
  GLOBALS ON
 
  EXTERN WaitTimerBms,InitializeUSB_Peripheral,StallControlPipe,FinishControlRequest
+ EXTERN InitializeUSB_Host,WaitTimer100ms,DecrementCounter
  EXTERN DispHexA,IPutC,DispHexHL
 
 ;USB Activity Interrupt Pump
@@ -112,19 +113,50 @@ DMWentHigh:
        out (57h),a
        jr exitUSBHook
 AcablePluggedIn:
-       ;Acknowledge interrupt
-       res 4,a
+       ;Acknowledge interrupt, enable only the A unplug event
+       call WaitTimer100ms
+       in a,(4Dh)
+       bit 5,a
+       jr nz,AcknowledgeAllLineInterrupts ;no or B cable is connected, so wonk out
+       ;Acknowledge A plug-in event
+       in a,(57h)
+       and 0EFh
        out (57h),a
-       ;TODO: Do something?
+       ;Wait until VBus goes low and bus suspends
+       ld de,DEFAULT_TIMEOUT
+$$:    call DecrementCounter
+       scf
+       jr z,exitUSBHook ;TODO: This should go to an error routine of some kind
+       in a,(4Dh)
+       bit 7,a
+       jr z,$B
+       bit 0,a
+       jr z,$B
+       call InitializeUSB_Host
+       ;Enable A unplug and OTG crud events
+       ld a,22h
+       out (57h),a
        jr exitUSBHook
 AcableUnplugged:
        ;Acknowledge interrupt
        res 5,a
        out (57h),a
-       ;TODO: Do something?
+       call WaitTimer100ms
+       in a,(4Dh)
+       bit 4,a
+       jr nz,AcknowledgeAllLineInterrupts
+       ;B device is attached
+       bit 6,a
+       ld a,93h ;VBus is high, so allow all sorts of OTG crud
+       jr nz,$F
+       ;VBus is low, so hold the controller in reset and wait for A or B plug-in event
+       xor a
+       out (4Ch),a
+       ld a,50h
+$$:    out (57h),a
        jr exitUSBHook
 BcablePluggedIn:
-       ;Enable only the B unplug event
+       ;Acknowledge interrupt, enable only the B unplug event
        ld a,80h
        out (57h),a
        call InitializeUSB_Peripheral
@@ -223,6 +255,7 @@ controlPipeEventOccurred:
        out (91h),a
        ld hl,USBFlags
        res sendingControlData,(hl)
+       res receivingControlData,(hl)
        jr exitUSBHook
 $$:    bit 4,a
        jr z,$F
@@ -603,5 +636,13 @@ $$:    add hl,de
        res 7,h
        set 6,h
        inc b
+       ret
+AcknowledgeAllLineInterrupts:
+       in a,(57h)
+       ld b,a
+       xor a
+       out (57h),a
+       ld a,b
+       out (57h),a
        ret
 

@@ -30,7 +30,7 @@ NAME = SIMULATOR_Z8PLUS
 
 [PRJ PATH]
 #begin
-PATH = c:\users\brandon\desktop\linky\trunk\
+PATH = c:\users\brandon\desktop\linky\linky\
 #end
 
 [FILES]

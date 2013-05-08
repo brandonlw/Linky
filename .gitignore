@@ -168,3 +168,6 @@ pip-log.txt
 *.map
 *.lst
 *.o
+*.hex
+*.sym
+*.html

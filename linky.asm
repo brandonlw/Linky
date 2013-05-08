@@ -48,7 +48,17 @@ DoDemos:
 
 demoMenu:
        DB "Demos",0
-       DB 1
-       DB "1) Back",0
+       DB 2
+       DB "1) Host Init",0
+       DW HostInit
+       DB "2) Back",0
        DW ShowMainMenu
+
+HostInit:
+       ld b,0
+       call DriverInit
+       call EnableUSB
+       B_CALL getkey
+       call DriverKill
+       jr DoDemos
 

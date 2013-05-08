@@ -5,10 +5,9 @@
  SEGMENT Main
  GLOBALS ON
 
- EXTERN WaitTimerBms,putAtoHL_ExtraRAMPage,getAfromHL_ExtraRAMPage,DispHexA
-
-DEFAULT_TIMEOUT             EQU    0FFFFh
-FRAME_COUNTER_TIMEOUT       EQU    0FFFFh*5
+ EXTERN WaitTimerBms,putAtoHL_ExtraRAMPage,getAfromHL_ExtraRAMPage,DispHexA,WaitTimer20ms,WaitTimer40ms
+ EXTERN WaitTimer100ms
+ EXTERN IPutC
 
 InitializeUSB_Peripheral:
 ;Initializes the USB controller in peripheral mode.
@@ -60,6 +59,7 @@ $$:    call DecrementCounter
        in a,(54h)
        set 0,a
        out (54h),a
+WaitForFrameCounterStart:
        ld b,FRAME_COUNTER_TIMEOUT / DEFAULT_TIMEOUT
 frameCounterLoop:
        ld de,DEFAULT_TIMEOUT
@@ -76,6 +76,9 @@ counterExpired:
        scf
        ret
 SetupClocks:
+ IFDEF TI84PCSE
+       call SetGPIOPin6
+ ENDIF
        ;Set up internal charge pump
        xor a
        out (4Bh),a
@@ -104,6 +107,285 @@ $$:    ;But then we enable it anyway? This might be an OS bug carried over to he
        out (54h),a
        ret
 
+SetGPIOPin6:
+;No idea what this does.
+       ;Set GPIO output pin 6
+       in a,(39h)
+       or 40h
+       out (39h),a
+       in a,(3Ah)
+       or 40h
+       out (3Ah),a
+       jr WaitTimer100ms
+
+InitializeUSB_Host:
+;Initializes the USB controller in host mode.
+;Returns carry set if problems
+ IFDEF TI84PCSE
+       call SetGPIOPin6
+ ENDIF
+       ;Get out if controller is not reset or suspended, and IP clock is enabled
+       in a,(4Ch)
+       and 1Ah
+       ret z
+       ;Hold the controller in reset
+       xor a
+       out (4Ch),a
+       ;Enable USB interrupts
+       ld a,1
+       out (5Bh),a
+       xor a
+       in a,(4Ch)
+       ;Disable 48MHz crystal, power down Toshiba PHY,
+       ; and disable USB suspend interrupt
+       ld a,2
+       out (54h),a
+       ;Set D- switches to default
+       ld a,20h
+       out (4Ah),a
+       ;Enable the various clocks we need
+       call SetupClocks
+iusbhStart:
+       ld de,DEFAULT_TIMEOUT
+$$:    call DecrementCounter
+       ;TODO: This needs to go to an error routine instead
+       scf
+       ret z
+       in a,(4Ch)
+       bit 0,a
+       jr nz,iusbhDone ;bus is suspended, apparently we should get out now
+       ;Is IP clock enabled? (this is 1Ah/5Ah ignoring controller reset bit)
+       and 0BFh
+       cp 12h
+       jr nz,$B
+       ;Yes, continue
+       in a,(4Dh)
+       bit 5,a
+       jr z,$F
+       ;We're the B device; request host control from the other device
+       call RequestHostControl
+       ret c
+       ;Make sure we get B cable unplug and A cable plug-in events? OTG screwery...
+       ld a,90h
+       out (57h),a
+       jr iusbhContinue
+$$:    ;We're the A device; drive VBus (I think)
+       call EnableHostMode
+iusbhContinue:
+       ;Enable all pipes for input/output
+       ld a,0FFh
+       out (87h),a
+       xor a
+       out (92h),a ;not sure what this is
+       ld a,0Eh
+       out (89h),a
+       ;Enable miscellaneous interrupts:
+       ;      0: Bus suspended
+       ;      5: Something unplugged
+       ;      7: Insufficient power
+       ld a,0A1h
+       out (8Bh),a
+       ld de,DEFAULT_TIMEOUT
+$$:    call DecrementCounter
+       ;TODO: This needs to go to an error routine instead
+       scf
+       ret z
+       in a,(81h)
+       bit 6,a
+       jr z,$B
+       ;Is host bit set?
+       in a,(8Fh)
+       bit 2,a
+       jr z,iusbhStart ;no, try again
+       ;Wait for frame counter to start
+       call WaitForFrameCounterStart
+       ret c
+       ;Finally, we are host (which can happen regardless of which cable is attached).
+       xor a
+       out (5Bh),a
+       call ResetAddress
+       ld a,1
+       out (5Bh),a
+iusbhDone:
+       or a
+       ret
+
+EnableHostModeFromBDevice:
+;Initiates an SRP request.
+       in a,(3Ah)
+       bit 3,a
+       jr nz,ehmOld
+       call WaitForVBusLow
+       ret c
+       ;Set external discharge timeout
+       ld a,27h
+       out (50h),a
+       ;Clear GPIO pins 0 and 1, set GPIO pin 2
+       in a,(3Ah)
+       and 0FCh
+       or 4
+       out (3Ah),a
+       ;Enable GPIO pins 0-2 for output
+       in a,(39h)
+       or 7
+       out (39h),a
+       ;Disable SRP timeout interrupt
+       ;Enable external discharge and start SRP request
+       in a,(4Fh)
+       and 0BFh
+       or 88h
+       out (4Fh),a
+       call WaitTimer20ms
+       ;Disable external discharge and stop SRP request
+       in a,(4Fh)
+       and 37h
+       out (4Fh),a
+       ;Clear GPIO pins 0-2
+       in a,(3Ah)
+       and 0F8h
+       out (3Ah),a
+       ;Enable GPIO pins 0-2 for output
+       in a,(39h)
+       or 7
+       out (39h),a
+       ;Release controller reset
+       ld a,8
+       out (4Ch),a
+       ;Drive VBus (I think)
+       ld a,1
+       out (8Fh),a
+       ld b,2
+ehmfbdLoop:
+       ld de,DEFAULT_TIMEOUT
+$$:    call DecrementCounter
+       jr z,$F
+       in a,(4Dh)
+       bit 6,a
+       jr z,$B
+       ;Disable GPIO pins 0-2 for output
+       in a,(39h)
+       and 0F8h
+       out (39h),a
+       or a
+       ret
+$$:    djnz ehmfbdLoop
+       scf
+       ret
+EnableHostMode:
+;Enables host mode (sets the "host bit") while B device is connected.
+       in a,(3Ah)
+       bit 3,a
+       jr nz,ehmNew ;use new method
+ehmOld:;Release controller reset
+       ld a,8
+       out (4Ch),a
+       ;I'm not sure what bit 5 of port 81h indicates...
+       ld de,DEFAULT_TIMEOUT
+$$:    call DecrementCounter
+       ;TODO: This needs to go to an error routine instead
+       scf
+       ret z
+       in a,(81h)
+       bit 5,a
+       jr nz,$B
+       ;Drive VBus (I think)
+       ld a,1
+       out (8Fh),a
+       jr WaitTimer20ms
+ehmNew:
+       call WaitForVBusLow
+       ret c
+       ;Clear GPIO pins 0 and 1
+       in a,(3Ah)
+       and 0FDh
+       out (3Ah),a
+       ;Enable output on GPIO pin 1
+       in a,(39h)
+       or 2
+       out (39h),a
+       ;Release controller reset
+       ld a,8
+       out (4Ch),a
+       ;Drive VBus (I think)
+       ld a,1
+       out (8Fh),a
+       call WaitForVBusHigh
+       ret c
+       ;Disable output on GPIO pins 0 and 1
+       in a,(39h)
+       and 0FDh
+       out (39h),a
+       ret
+RequestHostControl:
+;Requests host control from the connected A device.
+       call EnableHostModeFromBDevice
+       ;TODO: This needs to go to an error routine instead
+       ret c
+       ;Disable all USB interrupts
+       xor a
+       out (5Bh),a
+       out (8Bh),a
+       ld b,50
+       call WaitTimerBms
+       ld a,3
+       out (8Fh),a
+       ;Enable all known miscellaneous interrupts
+       ld a,0F7h
+       out (8Bh),a
+       ;Wait for new device to connect
+       ld de,DEFAULT_TIMEOUT
+$$:    call DecrementCounter
+       ;TODO: This needs to go to an error routine instead
+       scf
+       ret z
+       in a,(86h)
+       bit 4,a
+       jr z,$B
+       call WaitTimer20ms
+       in a,(81h)
+       and 0F7h
+       out (81h),a
+       call ResetAddress
+       in a,(8Fh)
+       xor a
+       ret
+ResetAddress:
+       ld a,8
+       out (81h),a
+       call WaitTimer20ms
+       xor a
+       out (81h),a
+       call WaitTimer40ms
+       xor a
+       out (80h),a
+       ret
+
+WaitForVBusLow:
+       ;Wait for VBus to go low
+       ld de,DEFAULT_TIMEOUT
+$$:    call DecrementCounter
+       ;TODO: This needs to go to an error routine instead
+       scf
+       ret z
+       in a,(4Dh)
+       bit 6,a
+       jr nz,$B
+       or a
+       ret
+
+WaitForVBusHigh:
+       ;Wait for VBus to go high
+       ld de,DEFAULT_TIMEOUT
+$$:    call DecrementCounter
+       ;TODO: This needs to go to an error routine instead
+       scf
+       ret z
+       in a,(4Dh)
+       bit 6,a
+       jr z,$B
+       or a
+       ret
+
 StallControlPipe:
        xor a
        out (8Eh),a
@@ -120,82 +402,6 @@ FinishControlRequest:
        out (91h),a
        in a,(91h)
        ret
-
-RecycleUSB:
-;Disconnects the USB connection and then re-initializes it
-;Returns carry set if problems
-;This routine can be replaced with an entry point...possibly 5311h (relies on interrupt)
-       xor a
-       out (5Bh),a
-       in a,(4Dh)
-       bit 5,a
-       jr nz,$F
-       xor a
-       out (4Ch),a
-       res 6,(iy+41h)
-       jr finishPart1
-$$:    ld b,8
-       in a,(4Dh)
-       bit 6,a
-       jr nz,$F
-       ld b,0
-$$:    ld a,b
-       out (4Ch),a
-finishPart1:
-       ld a,2
-       out (54h),a
-       ld a,(39h)
-       and 0F8h
-       out (39h),a
-       res 0,(iy+41h)
-       in a,(4Dh)
-       bit 5,a
-       jr nz,finishPart2
-       ld de,0FFFFh
-$$:    dec de
-       ld a,d
-       or e
-       scf
-       ret z
-       in a,(4Dh)
-       bit 7,a
-       jr z,$B
-       in a,(4Dh)
-       bit 0,a
-       jr z,$B
-       ld a,22h
-       out (57h),a
-       xor a
-       ret
-finishPart2:
-       in a,(4Dh)
-       bit 6,a
-       jr nz,$F
-       xor a
-       out (4Ch),a
-       ld a,50h
-       jr outputPort57h
-$$:    ld a,93h
-outputPort57h:
-       out (57h),a
-       xor a
-       ret
-
-GetControlPacket:
-;Gets B bytes from control pipe to HL
-	in a,(0A0h)
-	ld (hl),a
-	inc hl
-	djnz GetControlPacket
-	ret
-
-WaitPort82:
-;Wait on port 82h to acknowledge transfer
-	in a,(82h)
-	and 1
-	jr z,WaitPort82
-	in a,(91h)
-	ret
 
 SetupOutPipe:
 ;Sets up outgoing pipe
