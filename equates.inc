@@ -84,10 +84,13 @@ USBFlags             EQU    9F56h ;1
 USBaddress           EQU    9C71h ;1
 USBFlags             EQU    9C75h ;1
  ENDIF
-noInterruptMode      EQU    0
-sendingControlData   EQU    1
-setAddress           EQU    2
-receivingControlData EQU    3
+noInterruptMode             EQU    0
+sendingControlData          EQU    1
+setAddress                  EQU    2
+receivingControlData        EQU    3
+receivingControlDataHost    EQU    4
+sendingControlDataHost      EQU    5
+requestIncomingData         EQU    6
 
 ;Log types
 ;TODO: Come back to these

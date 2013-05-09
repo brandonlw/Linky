@@ -6,8 +6,14 @@
  GLOBALS ON
 
  EXTERN WaitTimerBms,putAtoHL_ExtraRAMPage,getAfromHL_ExtraRAMPage,DispHexA,WaitTimer20ms,WaitTimer40ms
- EXTERN WaitTimer100ms
+ EXTERN WaitTimer100ms,SendControlDataIncoming,HandleUSBActivity,SendControlDataOutgoing,ClearControlBuffer
  EXTERN IPutC
+
+IsInterruptMode:
+;Returns Z set if using interrupts, or NZ if using "no interrupt" mode.
+       ld a,(USBFlags)
+       and 1
+       ret
 
 InitializeUSB_Peripheral:
 ;Initializes the USB controller in peripheral mode.
@@ -155,7 +161,7 @@ $$:    call DecrementCounter
        bit 0,a
        jr nz,iusbhDone ;bus is suspended, apparently we should get out now
        ;Is IP clock enabled? (this is 1Ah/5Ah ignoring controller reset bit)
-       and 0BFh
+       res 6,a
        cp 12h
        jr nz,$B
        ;Yes, continue
@@ -360,6 +366,90 @@ ResetAddress:
        out (80h),a
        ret
 
+GetDeviceDescriptor:
+;Get device descriptor.
+;Inputs:      B: page to store data
+;             HL: address to store data
+;             DE: number of bytes to retrieve
+       call ClearControlBuffer
+       ld hl,0680h
+       ld (controlBuffer),hl
+       ld a,01h
+       ld (controlBuffer+3),a
+       ld (controlBuffer+6),de
+       ;Fall through to SendControlRequest
+SendControlRequest:
+;Issues control request with potential incoming/outgoing data.
+;Inputs:      controlBuffer: SETUP data
+;             B: page containing data to send/receive, if any
+;             HL: address of data to send/receive, if any
+;             DE: number of bytes to send or expected to receive
+;Returns carry flag set if problems
+       ld a,(controlBuffer)
+       bit 7,a
+       jr nz,SendControlRequest_DeviceToHost
+       push de
+       ld de,(controlBuffer+6)
+       ld a,d
+       or e
+       pop de
+       jr z,SendControlRequest_NoData
+       ;Fall through to SendControlRequest_HostToDevice
+SendControlRequest_HostToDevice:
+;Issues control request with potential host->device data sent.
+;Inputs:      B: page containing data to send, if any
+;             HL: address of data to send, if any
+;Returns carry flag set if problems
+       ld de,(controlBuffer+6)
+       call SendControlDataOutgoing
+       ld de,DEFAULT_TIMEOUT
+scrhtdWaitLoop:
+       call DecrementCounter
+       scf
+       ret z
+       call IsInterruptMode
+       jr nz,$F
+       ei
+       halt
+       jr scrhtdContinue
+$$:    push de
+       call HandleUSBActivity
+       pop de
+scrhtdContinue:
+       ld hl,USBFlags
+       bit sendingControlData,(hl)
+       jr nz,scrhtdWaitLoop
+       or a
+       ret
+SendControlRequest_DeviceToHost:
+SendControlRequest_NoData:
+;Issues control request with potential device->host data received.
+;Inputs:      B: page to receive incoming data
+;             HL: address to receive incoming data
+;Outputs:     TODO: Bytes actually received
+;Returns carry flag set if problems
+       ld de,(controlBuffer+6)
+       call SendControlDataIncoming
+       ld de,DEFAULT_TIMEOUT
+scrdthWaitLoop:
+       call DecrementCounter
+       scf
+       ret z
+       call IsInterruptMode
+       jr nz,$F
+       ei
+       halt
+       jr scrdthContinue
+$$:    push de
+       call HandleUSBActivity
+       pop de
+scrdthContinue:
+       ld hl,USBFlags
+       bit receivingControlDataHost,(hl)
+       jr nz,scrdthWaitLoop
+       or a
+       ret
+
 WaitForVBusLow:
        ;Wait for VBus to go low
        ld de,DEFAULT_TIMEOUT
@@ -387,6 +477,7 @@ $$:    call DecrementCounter
        ret
 
 StallControlPipe:
+;This is for peripheral mode only. 60h has a different meaning in host mode.
        xor a
        out (8Eh),a
        ld a,60h
@@ -402,6 +493,8 @@ FinishControlRequest:
        out (91h),a
        in a,(91h)
        ret
+
+;------------------------------------------------------------------------------
 
 SetupOutPipe:
 ;Sets up outgoing pipe

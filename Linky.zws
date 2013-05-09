@@ -45,6 +45,7 @@ SOURCE = log.asm
 SOURCE = logview.asm
 SOURCE = interfaces.asm
 SOURCE = dfu.asm
+SOURCE = high.asm
 #end
 
 [WEB FILES]

@@ -62,3 +62,59 @@ HostInit:
        call DriverKill
        jr DoDemos
 
+SendMissileCommand:
+       ld hl,0921h
+       ld (controlBuffer),hl
+       ld hl,0200h
+       ld (controlBuffer+2),hl
+       ld hl,0
+       ld (controlBuffer+4),hl
+       ld de,1
+       ld (controlBuffer+6),de
+       ld hl,appData
+       ld (hl),b
+       ld b,1
+;       jr SendControlRequest
+DoMissileStuff:
+       ld a,01h
+       out (8Eh),a
+       ld a,31h
+       out (9Ah),a
+       ld a,1
+       out (93h),a
+       ld a,90h
+       out (94h),a
+       xor a
+       out (95h),a
+       ld a,20
+       out (9Bh),a
+       ld a,0Eh
+       out (89h),a
+       ld b,40h
+       call SendMissileCommand
+       ld a,1
+       out (8Eh),a
+       ld a,20h
+       out (94h),a
+       ld b,40h
+       call SendMissileCommand
+       ld a,1
+       out (8Eh),a
+       ld a,20h
+       out (94h),a
+       ld b,10h
+       call SendMissileCommand
+       ld b,40h
+       call SendMissileCommand
+       ld a,1
+       out (8Eh),a
+       ld a,20h
+       out (94h),a
+       ld b,40h
+       call SendMissileCommand
+       ld a,1
+       out (8Eh),a
+       ld a,20h
+       out (94h),a
+       ret
+

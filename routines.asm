@@ -42,6 +42,11 @@ DriverInit:
        ld hl,USBactivityHook
        B_CALL EnableUSBHook
        ;Set everything up
+       ld hl,deviceDescriptor
+       ld bc,9
+       B_CALL MemClear
+       ld hl,0
+       ld (controlRequestHandler),hl
        pop bc
        ld a,b
        and 1

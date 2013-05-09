@@ -6,7 +6,7 @@
  GLOBALS ON
 
  EXTERN WaitTimerBms,InitializeUSB_Peripheral,StallControlPipe,FinishControlRequest
- EXTERN InitializeUSB_Host,WaitTimer100ms,DecrementCounter
+ EXTERN InitializeUSB_Host,WaitTimer100ms,DecrementCounter,SetupDevice,RemoveDevice
  EXTERN DispHexA,IPutC,DispHexHL
 
 ;USB Activity Interrupt Pump
@@ -136,6 +136,9 @@ $$:    call DecrementCounter
        ;Enable A unplug and OTG crud events
        ld a,22h
        out (57h),a
+       xor a
+       ld b,a
+       call SetupDevice
        jr exitUSBHook
 AcableUnplugged:
        ;Acknowledge interrupt
@@ -154,6 +157,9 @@ AcableUnplugged:
        out (4Ch),a
        ld a,50h
 $$:    out (57h),a
+       xor a
+       ld b,a
+       call RemoveDevice
        jr exitUSBHook
 BcablePluggedIn:
        ;Acknowledge interrupt, enable only the B unplug event
@@ -219,11 +225,12 @@ $$:    in a,(8Fh)
        bit 2,a
        jr z,inPeripheralMode
        ;Host bit is set
-       ;TODO: Do something here
-       jr exitUSBHook
+       jr handleInOutData
 inPeripheralMode:
        bit 2,b
        jr nz,busResetOccurred
+handleInOutData:
+;TODO: This needs to handle each incoming and outgoing bit each time either byte is read.
        in a,(82h)
        bit 0,a
        res 0,a
@@ -264,7 +271,11 @@ $$:    bit 4,a
        out (91h),a
 $$:    ;Now is as good a time as any to continue sending/receiving control data, if we need to
        ld hl,USBFlags
+       bit requestIncomingData,(hl)
+       jr nz,continueControlInputRequestData
        bit receivingControlData,(hl)
+       jr nz,continueControlInput
+       bit receivingControlDataHost,(hl)
        jr nz,continueControlInput
        bit sendingControlData,(hl)
        jr nz,continueControlOutput
@@ -286,9 +297,12 @@ $$:    in a,(0A0h)
        djnz $B
        ;Handle the incoming control request
        ld hl,(controlRequestHandler)
+       ld a,h
+       or l
+       jr z,$F
        call jpHL
        jr nc,exitUSBHook
-       ld a,(controlBuffer)
+$$:    ld a,(controlBuffer)
        bit 7,a
        jr nz,deviceToHostRequestReceived
        ;Host to device request received
@@ -329,6 +343,9 @@ getDescriptorReceived:
        jr stallControlPipeExitHook
 getStringDescriptorReceived:
        ld hl,(stringDescriptor)
+       ld a,h
+       or l
+       jr z,stallControlPipeExitHook
        ld bc,(stringDescriptorPage-1)
        call GetDescriptorByte
        or a
@@ -357,6 +374,9 @@ $$:    call IncBHL
        jr StartControlResponse
 getConfigDescriptorReceived:
        ld hl,(configDescriptor)
+       ld a,h
+       or l
+       jr z,stallControlPipeExitHook
        ld bc,(configDescriptorPage-1)
        call IncBHL
        call IncBHL
@@ -368,9 +388,39 @@ getConfigDescriptorReceived:
        ld hl,(configDescriptor)
        ld bc,(configDescriptorPage-1)
        jr StartControlResponse
+SendControlDataOutgoing:
+       ld a,b
+       ld (controlDataPage),a
+       ld (controlDataAddress),hl
+       ld hl,USBFlags
+       set sendingControlDataHost,(hl)
+       set sendingControlData,(hl)
+       ld hl,controlBuffer
+       ld b,8
+$$:    ld a,(hl)
+       out (0A0h),a
+       inc hl
+       djnz $B
+       xor a
+       out (8Eh),a
+       ld a,0Ah
+       out (91h),a
+       ld hl,(controlBuffer+6)
+       or a
+       push hl
+       sbc hl,de
+       pop hl
+       jr nc,$F
+       ld d,h
+       ld e,l
+$$:    ld (controlDataRemaining),de
+       jr exitUSBHook
 getDeviceDescriptorReceived:
        ld bc,(deviceDescriptorPage-1)
        ld hl,(deviceDescriptor)
+       ld a,h
+       or l
+       jr z,stallControlPipeExitHook
        call GetDescriptorByte
        ld d,0
        ld e,a
@@ -401,8 +451,12 @@ continueControlOutput:
        ld de,(controlDataRemaining)
        ld a,d
        or e
-       jr z,scrDone
-       ld hl,(maxPacketSizes)
+       jr nz,$F
+       ld hl,USBFlags
+       bit sendingControlDataHost,(hl)
+       jr nz,scrOutputDone
+       jr scrDone
+$$:    ld hl,(maxPacketSizes)
        ld h,0
        or a
        push hl
@@ -466,7 +520,15 @@ ocoContinue:
        ld a,81h
        out (7),a
        ld (controlDataAddress),hl
-       ld hl,(controlDataRemaining)
+       ld hl,USBFlags
+       bit sendingControlDataHost,(hl)
+       jr z,$F
+       xor a
+       out (8Eh),a
+       ld a,2
+       out (91h),a
+       jr exitUSBHook
+$$:    ld hl,(controlDataRemaining)
        ld a,h
        or l
        jr z,scrOutputDone
@@ -476,34 +538,78 @@ ocoContinue:
        out (91h),a
        jr exitUSBHook
 scrOutputDone:
+       ld hl,USBFlags
+       bit sendingControlDataHost,(hl)
+       res sendingControlDataHost,(hl)
+       jr z,$F
+       xor a
+       out (8Eh),a
+       ld a,60h
+       out (91h),a
+       ld a,8
+;       call IPutC
+       jr exitUSBHook
+$$:    ;Apparently we either don't get a confirmation for the above,
+       ; or we don't care, so go ahead and reset our flag.
        xor a
        out (8Eh),a
        ld a,0Ah
        out (91h),a
-       ;Apparently we either don't get a confirmation for the above,
-       ; or we don't care, so go ahead and reset our flag.
        ld hl,USBFlags
        res sendingControlData,(hl)
+       res sendingControlDataHost,(hl)
        jr exitUSBHook
 scrDone:
        ld hl,USBFlags
        res sendingControlData,(hl)
+       res sendingControlDataHost,(hl)
        jr exitUSBHook
+SendControlDataIncoming:
+       push hl
+       push bc
+       ld hl,USBFlags
+       set receivingControlDataHost,(hl)
+       set requestIncomingData,(hl)
+       set sendingControlData,(hl)
+       ld hl,controlBuffer
+       ld b,8
+$$:    ld a,(hl)
+       out (0A0h),a
+       inc hl
+       djnz $B
+       xor a
+       out (8Eh),a
+       ld a,0Ah
+       out (91h),a
+       pop bc
+       pop hl
+       jr $F
 StartControlInput:
        ld a,d
        or e
        jr z,finishControlRequestExitHook
-       ;Start receiving the data for this control request
+       set receivingControlData,(hl)
+$$:    ;Start receiving the data for this control request
        ld a,b
        ld (controlDataPage),a
        ld (controlDataAddress),hl
        ld (controlDataRemaining),de
-       ld hl,USBFlags
-       set receivingControlData,(hl)
-       res sendingControlData,(hl)
        xor a
        out (8Eh),a
+       ld hl,USBFlags
+       res sendingControlData,(hl)
+       bit receivingControlDataHost,(hl)
+       ld a,0Ah
+       jr nz,$F
        ld a,40h
+$$:    out (91h),a
+       jr exitUSBHook
+continueControlInputRequestData:
+       ld hl,USBFlags
+       res requestIncomingData,(hl)
+       xor a
+       out (8Eh),a
+       ld a,20h
        out (91h),a
        jr exitUSBHook
 continueControlInput:
@@ -548,7 +654,19 @@ $$:    dec de
        ld a,81h
        out (7),a
        ld (controlDataAddress),hl
-       ld hl,(controlDataRemaining)
+       ld hl,USBFlags
+       bit receivingControlDataHost,(hl)
+       jr z,$F
+       ld bc,(controlDataRemaining)
+       ld a,b
+       or c
+       jr nz,continueControlInputRequestData
+       xor a
+       out (8Eh),a
+       ld a,42h
+       out (91h),a
+       jr exitUSBHook
+$$:    ld hl,(controlDataRemaining)
        ld a,h
        or l
        jr z,finishControlRequestExitHook
@@ -560,12 +678,15 @@ $$:    dec de
 sciDone:
        ld hl,USBFlags
        res receivingControlData,(hl)
+       res receivingControlDataHost,(hl)
        jr exitUSBHook
 outgoingDataSuccess:
        ;TODO: Deal with this
        jr exitUSBHook
 incomingDataReady:
        ;TODO: Deal with this
+       ld a,1
+       call IPutC
        jr exitUSBHook
 exitUSBHook:
 	ld b,0
