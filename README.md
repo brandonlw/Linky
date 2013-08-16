@@ -11,7 +11,7 @@ DFU Mode
 To use DFU (Device Firmware Upgrade) mode, follow these steps:
 
 1. On the calculator, run Flash application LINKYDRV and select 1) Tools, then the appropriate option ("DFU ROM Dump" to upload the ROM to your computer, or "DFU ROM Write" to download the ROM from your computer into the calculator).
-2. If on Windows, find zadiag and run it to install the WinUSB driver for the newly-discovered device above (vendor ID 0x0451, product ID 0xDEAD).
+2. If on Windows, find zadig and run it to install the WinUSB driver for the newly-discovered device above (vendor ID 0x0451, product ID 0xDEAD).
 2. Download dfu-util for your particular platform -- use option -U for upload, -D for download, -l to list devices.
 
 Dumping the ROM
